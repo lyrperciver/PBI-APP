@@ -88,6 +88,91 @@ DEFAULT_FEATURE_ORDER = [
 # 明确二元变量集合（1=有/是；0=无/否；sex_male: 1=男，0=女）
 BINARY_FEATURES = {"antenatal_mgso4","surgery","NRDS","AOP","sex_male"}
 
+# —— 风险分级：用两条阈值派生四档（极低/低/中/高）——
+def risk_band_from_prob(p: float, hs_thr: float, y_thr: float) -> str:
+    """基于高敏阈值与 Youden 阈值给出四分级。
+    规则：p >= y_thr → 高；hs_thr ≤ p < y_thr → 中；0.5*hs_thr ≤ p < hs_thr → 低；否则 极低
+    """
+    if p >= y_thr:
+        return "高"
+    elif p >= hs_thr:
+        return "中"
+    elif p >= 0.5 * hs_thr:
+        return "低"
+    else:
+        return "极低"
+
+# —— 计算 LightGBM 贡献：使用 pipeline 的“前处理 + LGBMClassifier”——
+def compute_lgbm_contrib(pipe, x_df):
+    """返回 base(log-odds) 与逐特征贡献（list[dict]）"""
+    try:
+        pre = pipe[:-1]
+        clf = pipe[-1]
+        Xp = pre.transform(x_df)
+        contrib = clf.predict(Xp, pred_contrib=True)  # shape=(1, n_features+1)
+        contrib = contrib[0]
+        base = float(contrib[-1])
+        vals = contrib[:-1]
+        items = []
+        for name, val in zip(x_df.columns.tolist(), vals):
+            items.append({
+                "feature": name,
+                "value": float(x_df.iloc[0][name]),
+                "contribution": float(val)
+            })
+        return base, items
+    except Exception as e:
+        raise RuntimeError(f"无法计算特征贡献（pred_contrib）：{e}")
+
+# —— 绘图（不依赖 shap 包）：waterfall & force（保存为 TIFF）——
+import matplotlib.pyplot as plt
+
+def save_waterfall_tif(base, items, out_path: str, top_k: int = 14):
+    items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
+    deltas = [it["contribution"] for it in items_sorted]
+    labels = [f'{it["feature"]}={it["value"]:.2f}' for it in items_sorted]
+    starts = []
+    cur = base
+    for d in deltas:
+        starts.append(cur)
+        cur += d
+    colors = ["#d62728" if d >= 0 else "#1f77b4" for d in deltas]
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=200)
+    ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6)
+    ax.axhline(0, color="k", lw=0.5)
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=8)
+    ax.set_ylabel("f(x) (log-odds)")
+    ax.set_title("Waterfall (LightGBM contributions)")
+    ax.text(-0.4, base, f"E[f(X)]={base:.3f}", va="center", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+def save_force_tif(base, items, out_path: str, top_k: int = 14):
+    items_sorted = sorted(items, key=lambda d: d["contribution"])
+    if top_k and top_k < len(items_sorted):
+        # 负向取 top_k/2，正向取 top_k/2
+        neg = [it for it in items_sorted if it["contribution"] < 0]
+        pos = [it for it in items_sorted if it["contribution"] >= 0]
+        k2 = max(1, top_k // 2)
+        items_sorted = neg[:k2] + pos[-k2:]
+    vals = [it["contribution"] for it in items_sorted]
+    labels = [f'{it["feature"]}={it["value"]:.2f}' for it in items_sorted]
+    colors = ["#1f77b4" if v < 0 else "#d62728" for v in vals]
+    y = list(range(len(vals)))
+    fig, ax = plt.subplots(figsize=(10, 0.35*len(vals)+2), dpi=200)
+    ax.barh(y, vals, color=colors)
+    ax.axvline(0, color="k", lw=0.5)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_xlabel("contribution to f(x)")
+    ax.set_title("Force-like plot (LightGBM contributions)")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
 # =============== 4) 路径与资产 ===============
 ROOT = Path(__file__).parent
 SKOPS_PATH = ROOT / "final_pipeline.skops"   # 推荐
@@ -186,7 +271,7 @@ def load_assets():
                 meta = json.loads(m.read_text(encoding="utf-8"))
                 break
             except Exception:
-                pass                
+                pass
     recal = None
     if RECAL_PATH.exists():
         try:
@@ -283,17 +368,88 @@ if btn_predict:
     x = pd.DataFrame([values])[order]  # 严格列顺序
     try:
         p = float(pipe.predict_proba(x)[:, 1][0])
-        # --- 部署端 post-hoc 再校准（不改排序/AUC，仅调整概率刻度） ---
+        # 部署端再校准（可选）
         if recal:
             a = float(recal.get("intercept", 0.0))
             b = float(recal.get("slope", 1.0))
             eps = 1e-12
-            z = np.log((p + eps) / (1 - p + eps))   # 安全 logit
+            z = np.log((p + eps) / (1 - p + eps))
             p = 1.0 / (1.0 + np.exp(-(a + b * z)))
     except Exception as e:
         st.error(f"预测失败：{e}")
         st.stop()
 
+    youden_thr = float(thrs["youden"])
+    hs_thr = float(thrs["highs"])
+
+    st.subheader(TEXT.get("pred_prob", {}).get(LANG, "预测概率 / Predicted probability"))
+    st.metric("Predicted probability", f"{p:.4f}")
+
+    # —— 两种策略下的四档风险分级 ——
+    band_youden = risk_band_from_prob(p, hs_thr, youden_thr)
+    band_highs = risk_band_from_prob(p, hs_thr, youden_thr)  # 分级规则一致，只是口径不同时你也可单独给阈值
+
+    st.write("**阈值与分级（四档）**")
+    c1, c2 = st.columns(2)
+    with c1:
+        dec_y = "阳性" if p >= youden_thr else "阴性"
+        st.info(f"**Youden**：阈值={youden_thr:.6f} → 判定：**{dec_y}**；风险分级：**{band_youden}**")
+    with c2:
+        dec_h = "阳性" if p >= hs_thr else "阴性"
+        st.info(f"**高敏**：阈值={hs_thr:.6f} → 判定：**{dec_h}**；风险分级：**{band_highs}**")
+
+    # —— 计算 LightGBM 贡献并绘图/导出 ——
+    import pandas as pd, numpy as np, io, zipfile, os
+
+    out_files = {}
+
+    try:
+        base, items = compute_lgbm_contrib(pipe, x)
+        # 保存 CSV（贡献明细）
+        df_contrib = pd.DataFrame(items)  # feature, value, contribution
+        out_files["shap_contrib.csv"] = df_contrib.to_csv(index=False).encode("utf-8")
+        # 保存 summary.csv（概率、阈值、分级）
+        df_summary = pd.DataFrame([{
+            "p_hat": p,
+            "youden_thr": youden_thr, "decision_youden": ("POS" if p >= youden_thr else "NEG"),
+            "highs_thr": hs_thr, "decision_highs": ("POS" if p >= hs_thr else "NEG"),
+            "band_youden": band_youden, "band_highs": band_highs,
+            "base_logit": base
+        }])
+        out_files["summary.csv"] = df_summary.to_csv(index=False).encode("utf-8")
+
+        # 绘图（TIFF）
+        wf_buf = io.BytesIO()
+        fc_buf = io.BytesIO()
+        tmp_wf = "shap_waterfall_case.tif"
+        tmp_fc = "shap_force_case.tif"
+        save_waterfall_tif(base, items, tmp_wf, top_k=min(14, len(items)))
+        save_force_tif(base, items, tmp_fc, top_k=min(14, len(items)))
+        with open(tmp_wf, "rb") as f:
+            out_files["shap_waterfall_case.tif"] = f.read()
+        with open(tmp_fc, "rb") as f:
+            out_files["shap_force_case.tif"] = f.read()
+        # 内嵌展示
+        st.image(tmp_wf, caption="Waterfall（LightGBM 贡献）", use_column_width=True)
+        st.image(tmp_fc, caption="Force-like（LightGBM 贡献）", use_column_width=True)
+        try:
+            os.remove(tmp_wf);
+            os.remove(tmp_fc)
+        except Exception:
+            pass
+    except Exception as e:
+        st.warning(f"未能生成贡献图：{e}")
+
+    # —— 打包导出 ——
+    if out_files:
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for nm, data in out_files.items():
+                zf.writestr(nm, data)
+        st.download_button("下载导出（包含分级、waterfall/force、贡献CSV）",
+                           data=zip_buf.getvalue(),
+                           file_name="pbi_single_prediction_exports.zip",
+                           mime="application/zip")
 
     y1 = int(p >= t_youden)
     y2 = int(p >= t_hsens)
