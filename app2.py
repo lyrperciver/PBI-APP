@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import json, io, os, zipfile
 import matplotlib.pyplot as plt
+import streamlit as st            # ← 新增：修复 NameError
+import joblib                     # ← 新增：回退用 joblib.load 时需要
 from sklearn.pipeline import Pipeline
 from sklearn.calibration import CalibratedClassifierCV
 
