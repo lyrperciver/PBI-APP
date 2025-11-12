@@ -101,7 +101,7 @@ META_PATHS = [ROOT / "version.json", ROOT / "release_meta.json"]
 DISPLAY = {
     "PLT": {"zh": "血小板计数 (PLT, 10^9/L)", "en": "Platelets (PLT, 10^9/L)"},
     "LAC": {"zh": "乳酸 (LAC, mmol/L)", "en": "Lactate (LAC, mmol/L)"},
-    "GA_weeks_decimal": {"zh": "胎龄（小数周）", "en": "Gestational age (weeks, decimal)"},
+    "GA_weeks_decimal": {"zh": "胎龄（周）", "en": "Gestational age (weeks, decimal)"},
     "inv_vent_days": {"zh": "有创通气天数 (d)", "en": "Invasive ventilation (days)"},
     "ALB": {"zh": "白蛋白 (ALB, g/L)", "en": "Albumin (ALB, g/L)"},
     "birth_weight_g": {"zh": "出生体重 (g)", "en": "Birth weight (g)"},
