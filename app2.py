@@ -94,7 +94,7 @@ SKOPS_PATH = ROOT / "final_pipeline.skops"   # 推荐
 PIPE_PATH  = ROOT / "final_pipeline.joblib"  # 回退
 SCHEMA_PATH = ROOT / "feature_schema.json"   # 若无则使用默认顺序
 THR_PATH    = ROOT / "thresholds.json"
-
+RECAL_PATH  = ROOT / "external_recal.json"
 META_PATHS = [ROOT / "version.json", ROOT / "release_meta.json"]
 
 # 显示映射（中英）
@@ -186,11 +186,18 @@ def load_assets():
                 meta = json.loads(m.read_text(encoding="utf-8"))
                 break
             except Exception:
-                pass
+                pass                
+    recal = None
+    if RECAL_PATH.exists():
+        try:
+            recal = json.loads(RECAL_PATH.read_text(encoding="utf-8"))
+        except Exception as e:
+            st.warning(f"读取 {RECAL_PATH.name} 失败：{e}")
 
-    return pipe, order, feat_defs, {"youden": youden, "highs": highs}, meta
+    return pipe, order, feat_defs, {"youden": youden, "highs": highs}, meta, recal
 
-pipe, order, featdefs, thrs, meta = load_assets()
+pipe, order, featdefs, thrs, meta, recal = load_assets()
+
 
 with st.expander(TEXT["meta"][LANG], expanded=False):
     st.json(meta or {"note": "N/A"})
@@ -276,9 +283,17 @@ if btn_predict:
     x = pd.DataFrame([values])[order]  # 严格列顺序
     try:
         p = float(pipe.predict_proba(x)[:, 1][0])
+        # --- 部署端 post-hoc 再校准（不改排序/AUC，仅调整概率刻度） ---
+        if recal:
+            a = float(recal.get("intercept", 0.0))
+            b = float(recal.get("slope", 1.0))
+            eps = 1e-12
+            z = np.log((p + eps) / (1 - p + eps))   # 安全 logit
+            p = 1.0 / (1.0 + np.exp(-(a + b * z)))
     except Exception as e:
         st.error(f"预测失败：{e}")
         st.stop()
+
 
     y1 = int(p >= t_youden)
     y2 = int(p >= t_hsens)
