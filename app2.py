@@ -195,54 +195,122 @@ def compute_lgbm_contrib(pipe, x_df):
 
 
 
-# —— 绘图（不依赖 shap 包）：waterfall & force（保存为 TIFF）——
+# —— 升级版：更贴近论文中 SHAP 报告风格（顶部一句话 + Waterfall + Force）——
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 
-def save_waterfall_tif(base, items, out_path: str, top_k: int = 14):
+def _format_risk_text(prob, band, lang="zh"):
+    band_map_en = {"极低":"very low", "低":"low", "中":"medium", "高":"high"}
+    if lang == "en":
+        return f"This patient has {band_map_en.get(band, band)} risk of PBI with the probability of {prob:.4f}."
+    else:
+        return f"该患儿脑损伤风险为「{band}」；预测概率 {prob:.4f}"
+
+def save_waterfall_tif(base, items, out_path: str, top_k: int = 14, lang="zh"):
     items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
     deltas = [it["contribution"] for it in items_sorted]
     labels = [f'{it["feature"]}={it["value"]:.2f}' for it in items_sorted]
-    starts = []
-    cur = base
+
+    # 累积：从基线 E[f(X)] 逐步加到 f(x)
+    starts, cur = [], base
     for d in deltas:
         starts.append(cur)
         cur += d
+    fx = cur
+
     colors = ["#d62728" if d >= 0 else "#1f77b4" for d in deltas]
-    fig, ax = plt.subplots(figsize=(10, 5), dpi=200)
-    ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6)
+    fig, ax = plt.subplots(figsize=(10, 4.8), dpi=200)
+    bars = ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6)
+
+    # 标注每个增量数值（+0.75 / -0.22）
+    for i, (b, d) in enumerate(zip(bars, deltas)):
+        ax.text(b.get_x()+b.get_width()/2, b.get_y()+b.get_height(),
+                f"{d:+.2f}", ha="center", va="bottom", fontsize=8)
+
+    # 基线与 f(x) 标注
     ax.axhline(0, color="k", lw=0.5)
+    ax.text(-0.6, base, f"E[f(X)] = {base:.3f}", va="center", fontsize=9)
+    ax.text(len(deltas)-0.4, fx,  f"f(x) = {fx:.3f}", va="center", fontsize=9)
+
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=8)
     ax.set_ylabel("f(x) (log-odds)")
-    ax.set_title("Waterfall (LightGBM contributions)")
-    ax.text(-0.4, base, f"E[f(X)]={base:.3f}", va="center", fontsize=8)
+    ax.set_title("Waterfall plot of this patient")
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
-def save_force_tif(base, items, out_path: str, top_k: int = 14):
-    items_sorted = sorted(items, key=lambda d: d["contribution"])
-    if top_k and top_k < len(items_sorted):
-        # 负向取 top_k/2，正向取 top_k/2
-        neg = [it for it in items_sorted if it["contribution"] < 0]
-        pos = [it for it in items_sorted if it["contribution"] >= 0]
-        k2 = max(1, top_k // 2)
-        items_sorted = neg[:k2] + pos[-k2:]
-    vals = [it["contribution"] for it in items_sorted]
-    labels = [f'{it["feature"]}={it["value"]:.2f}' for it in items_sorted]
-    colors = ["#1f77b4" if v < 0 else "#d62728" for v in vals]
-    y = list(range(len(vals)))
-    fig, ax = plt.subplots(figsize=(10, 0.35*len(vals)+2), dpi=200)
-    ax.barh(y, vals, color=colors)
+def save_force_tif(base, items, out_path: str, top_k: int = 14, lang="zh"):
+    # 取绝对值最大的若干个，做“累计段状”力图
+    items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
+    fig_h = 2.6 + 0.28 * len(items_sorted)
+    fig, ax = plt.subplots(figsize=(10, fig_h), dpi=200)
+
+    # 从 base 开始，按贡献顺序“堆”出红蓝段
+    cursor = base
+    for it in items_sorted:
+        c = it["contribution"]
+        left = cursor if c >= 0 else cursor + c
+        width = abs(c)
+        color = "#d62728" if c >= 0 else "#1f77b4"
+        ax.add_patch(Rectangle((left, 0.2), width, 0.6, color=color))
+        ax.text(left + (width/2), 0.5, f'{it["feature"]}={it["value"]:.2f}',
+                ha="center", va="center", fontsize=8, color="white",
+                bbox=dict(boxstyle="round,pad=0.15", facecolor=color, edgecolor="none", alpha=0.8))
+        cursor += c
+
+    fx = cursor
+    # 中轴、基线与终点
     ax.axvline(0, color="k", lw=0.5)
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=8)
-    ax.set_xlabel("contribution to f(x)")
-    ax.set_title("Force-like plot (LightGBM contributions)")
+    ax.text(base, 0.95, f"base value = {base:.3f}", ha="center", va="bottom", fontsize=9)
+    ax.text(fx,   0.95, f"f(x) = {fx:.3f}", ha="center", va="bottom", fontsize=9)
+
+    # 只显示 x 轴刻度；隐藏 y 轴修饰
+    ax.set_yticks([])
+    ax.set_xlabel("contribution to f(x) (log-odds)")
+    ax.set_title("The force plot of this patient")
+    ax.set_ylim(0, 1.2)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
+def save_shap_report_tif(base, items, prob, band_text, out_path: str, lang="zh", top_k: int = 14):
+    """一页式报告：上方一句话风险总结 + Waterfall + Force"""
+    # 先生成两张子图，再拼在一张画布上
+    tmp_wf = "_tmp_wf.tif"
+    tmp_fc = "_tmp_fc.tif"
+    save_waterfall_tif(base, items, tmp_wf, top_k=top_k, lang=lang)
+    save_force_tif(base, items, tmp_fc, top_k=top_k, lang=lang)
+
+    wf = plt.imread(tmp_wf)
+    fc = plt.imread(tmp_fc)
+    fig, ax = plt.subplots(figsize=(10, 11), dpi=200)
+    ax.axis("off")
+
+    # 顶部一句话
+    ax.text(0.02, 0.97, _format_risk_text(prob, band_text, lang),
+            ha="left", va="top", fontsize=14, color="crimson", transform=ax.transAxes)
+
+    # 简短说明文字（与示例类似）
+    desc_en = ("Waterfall plots are designed to display explanations for individual predictions. "
+               "Each row shows how the positive (red) or negative (blue) contribution of each feature "
+               "moves the value from the expected model output to the model output for this prediction.")
+    desc_zh = "瀑布图用于解释个体预测：红色表示提高风险的贡献，蓝色表示降低风险的贡献；从基线 E[f(X)] 逐步累加到 f(x)。"
+    ax.text(0.02, 0.935, desc_en if lang=="en" else desc_zh,
+            ha="left", va="top", fontsize=10, color="#444", transform=ax.transAxes)
+
+    # 把两张子图贴到画布
+    ax.imshow(wf, extent=[0, 1, 0.43, 0.92])
+    ax.imshow(fc, extent=[0, 1, 0.02, 0.40])
+
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    # 清理临时文件
+    try:
+        import os
+        os.remove(tmp_wf); os.remove(tmp_fc)
+    except Exception:
+        pass
 
 # =============== 4) 路径与资产 ===============
 ROOT = Path(__file__).parent
@@ -489,25 +557,41 @@ if btn_predict:
         }])
         out_files["summary.csv"] = df_summary.to_csv(index=False).encode("utf-8")
 
-        # 绘图（TIFF）
-        wf_buf = io.BytesIO()
-        fc_buf = io.BytesIO()
+        # 绘图（升级：一页式报告 + 单图各自保存）
         tmp_wf = "shap_waterfall_case.tif"
         tmp_fc = "shap_force_case.tif"
-        save_waterfall_tif(base, items, tmp_wf, top_k=min(14, len(items)))
-        save_force_tif(base, items, tmp_fc, top_k=min(14, len(items)))
+        tmp_report = "shap_report_case.tif"
+
+        # 当前页面语言与“哪种阈值口径”的分级文本
+        active_band = band_youden if mode == TEXT["youd"][LANG] else band_highs
+
+        save_waterfall_tif(base, items, tmp_wf, top_k=min(14, len(items)), lang=LANG)
+        save_force_tif(base, items, tmp_fc, top_k=min(14, len(items)), lang=LANG)
+        save_shap_report_tif(base, items, prob=p, band_text=active_band,
+                             out_path=tmp_report, lang=LANG, top_k=min(14, len(items)))
+
+        # 放入导出包
         with open(tmp_wf, "rb") as f:
             out_files["shap_waterfall_case.tif"] = f.read()
         with open(tmp_fc, "rb") as f:
             out_files["shap_force_case.tif"] = f.read()
-        # 内嵌展示
-        st.image(tmp_wf, caption="Waterfall（LightGBM 贡献）", use_column_width=True)
-        st.image(tmp_fc, caption="Force-like（LightGBM 贡献）", use_column_width=True)
+        with open(tmp_report, "rb") as f:
+            out_files["shap_report_case.tif"] = f.read()
+
+        # 页面展示“报告式”与单图
+        st.image(tmp_report, caption="单例解释报告（顶部结论 + 瀑布图 + Force）", use_column_width=True)
+        with st.expander("查看单独图片", expanded=False):
+            st.image(tmp_wf, caption="Waterfall（LightGBM 贡献）", use_column_width=True)
+            st.image(tmp_fc, caption="Force-like（LightGBM 贡献）", use_column_width=True)
+
+        # 清理本地临时文件
         try:
             os.remove(tmp_wf);
-            os.remove(tmp_fc)
+            os.remove(tmp_fc);
+            os.remove(tmp_report)
         except Exception:
             pass
+
     except Exception as e:
         st.warning(f"未能生成贡献图：{e}")
 
