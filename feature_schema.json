@@ -1,0 +1,160 @@
+{
+  "features": [
+    {
+      "name": "PLT",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "LAC",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "GA_weeks_decimal",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "inv_vent_days",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "ALB",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "birth_weight_g",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "WBC",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "Hb",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "BE",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "antenatal_mgso4",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "surgery",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "NRDS",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "AOP",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    },
+    {
+      "name": "sex_male",
+      "dtype": "float",
+      "unit": "",
+      "allowed_range": [
+        null,
+        null
+      ],
+      "missing_strategy": "SimpleImputer(median)"
+    }
+  ],
+  "order": [
+    "PLT",
+    "LAC",
+    "GA_weeks_decimal",
+    "inv_vent_days",
+    "ALB",
+    "birth_weight_g",
+    "WBC",
+    "Hb",
+    "BE",
+    "antenatal_mgso4",
+    "surgery",
+    "NRDS",
+    "AOP",
+    "sex_male"
+  ]
+}

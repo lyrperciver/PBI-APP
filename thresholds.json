@@ -1,0 +1,8 @@
+{
+  "youden": {
+    "thr": 0.185
+  },
+  "high_sensitivity": {
+    "thr": 0.117
+  }
+}
