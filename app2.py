@@ -20,6 +20,7 @@ import joblib                     # ← 新增：回退用 joblib.load 时需要
 from sklearn.pipeline import Pipeline
 from sklearn.calibration import CalibratedClassifierCV
 
+
 BINARY_FEATURES = {"antenatal_mgso4","surgery","NRDS","AOP","sex_male"}
 
 
@@ -111,41 +112,74 @@ def risk_band_from_prob(p: float, hs_thr: float, y_thr: float) -> str:
 def compute_lgbm_contrib(pipe, x_df):
     """
     返回 base(log-odds) 与逐特征贡献（list[dict]）。
-    兼容末层为 CalibratedClassifierCV（从中取 base_estimator=LGBMClassifier）。
+    兼容：
+      - 任意多层 Pipeline
+      - CalibratedClassifierCV（不同版本字段名：estimator / classifier / base_estimator）
+    只使用 getattr(..., None) 安全取属性，避免 AttributeError。
     """
+    def _find_inner_estimator(m):
+        # Pipeline → 递归到最后一步
+        if isinstance(m, Pipeline):
+            return _find_inner_estimator(m.steps[-1][1])
+
+        # Calibrated → 遍历已拟合的 calibrated_classifiers_ 列表
+        if isinstance(m, CalibratedClassifierCV):
+            ccs = getattr(m, "calibrated_classifiers_", None)
+            if ccs:
+                # 逐个尝试拿内部估计器
+                for cc in ccs:
+                    for key in ("estimator", "classifier", "base_estimator"):
+                        est = getattr(cc, key, None)
+                        if est is not None:
+                            return _find_inner_estimator(est)
+            # 有些版本还会在 CalibratedClassifierCV 自身挂一个 estimator/base_estimator
+            for key in ("estimator", "base_estimator", "classifier"):
+                est = getattr(m, key, None)
+                if est is not None:
+                    return _find_inner_estimator(est)
+            raise RuntimeError("CalibratedClassifierCV 未暴露内部估计器（estimator/classifier/base_estimator 均不存在）。")
+
+        # 若对象本身就是模型（如 LGBMClassifier），直接返回
+        return m
+
     try:
-        # 拆 pipeline：preprocess（前 N-1 步） + last（最后一层）
-        if hasattr(pipe, "steps"):
-            pre = Pipeline(steps=pipe.steps[:-1]) if len(pipe.steps) > 1 else None
+        # 拆前处理与最后一步
+        if hasattr(pipe, "steps") and len(pipe.steps) > 1:
+            pre = Pipeline(steps=pipe.steps[:-1])
             last = pipe.steps[-1][1]
         else:
             pre, last = None, pipe
 
-        # 前处理
         Xp = pre.transform(x_df) if pre is not None else x_df
 
-        # 若是 CalibratedClassifierCV，则取其内部的 base_estimator
-        raw_est = last
-        if isinstance(last, CalibratedClassifierCV):
-            # 已拟合后应有 calibrated_classifiers_；cv='prefit' 时长度多为 1
-            if hasattr(last, "calibrated_classifiers_") and last.calibrated_classifiers_:
-                raw_est = last.calibrated_classifiers_[0].base_estimator
-            elif hasattr(last, "base_estimator") and last.base_estimator is not None:
-                raw_est = last.base_estimator
-            else:
-                raise RuntimeError("CalibratedClassifierCV 未找到 base_estimator。")
+        # 剥离到底层 LGBMClassifier
+        raw_est = _find_inner_estimator(last)
 
-        # 用 LightGBM 的 pred_contrib 取 TreeSHAP（最后一列是 bias）
+        # 先尝试 raw_est.predict(..., pred_contrib=True)
+        contrib = None
         if hasattr(raw_est, "predict"):
-            contrib = raw_est.predict(Xp, pred_contrib=True)
-        elif hasattr(raw_est, "booster_"):
-            contrib = raw_est.booster_.predict(Xp, pred_contrib=True)
-        else:
-            raise RuntimeError("底层估计器不支持 pred_contrib。")
+            try:
+                contrib = raw_est.predict(Xp, pred_contrib=True)
+            except TypeError:
+                contrib = None
 
-        contrib = np.asarray(contrib)[0]          # (n_features+1,)
-        base = float(contrib[-1])                 # bias / E[f(X)]
-        vals = contrib[:-1]
+        # 再尝试 booster_.predict
+        if contrib is None and hasattr(raw_est, "booster_"):
+            try:
+                contrib = raw_est.booster_.predict(Xp, pred_contrib=True)
+            except Exception:
+                contrib = None
+
+        if contrib is None:
+            raise RuntimeError(
+                "底层估计器不支持 LightGBM 的 pred_contrib；"
+                f"实际类型：{type(raw_est)}，可用属性：{dir(raw_est)}"
+            )
+
+        contrib = np.asarray(contrib)
+        vec = contrib[0] if contrib.ndim == 2 else contrib
+        base = float(vec[-1])      # 最后一列是 bias/base value
+        vals = vec[:-1]
 
         items = []
         for name, val in zip(x_df.columns.tolist(), vals):
@@ -158,6 +192,7 @@ def compute_lgbm_contrib(pipe, x_df):
 
     except Exception as e:
         raise RuntimeError(f"无法计算特征贡献（pred_contrib）：{e}")
+
 
 
 # —— 绘图（不依赖 shap 包）：waterfall & force（保存为 TIFF）——
