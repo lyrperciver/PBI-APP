@@ -11,10 +11,15 @@
 import json
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
-import streamlit as st
+import json, io, os, zipfile
+import matplotlib.pyplot as plt
+from sklearn.pipeline import Pipeline
+from sklearn.calibration import CalibratedClassifierCV
+
+BINARY_FEATURES = {"antenatal_mgso4","surgery","NRDS","AOP","sex_male"}
+
 
 # =========================
 # 1) 多语言文本
@@ -85,8 +90,6 @@ DEFAULT_FEATURE_ORDER = [
     "PLT","LAC","GA_weeks_decimal","inv_vent_days","ALB","birth_weight_g",
     "WBC","Hb","BE","antenatal_mgso4","surgery","NRDS","AOP","sex_male"
 ]
-# 明确二元变量集合（1=有/是；0=无/否；sex_male: 1=男，0=女）
-BINARY_FEATURES = {"antenatal_mgso4","surgery","NRDS","AOP","sex_male"}
 
 # —— 风险分级：用两条阈值派生四档（极低/低/中/高）——
 def risk_band_from_prob(p: float, hs_thr: float, y_thr: float) -> str:
@@ -104,15 +107,44 @@ def risk_band_from_prob(p: float, hs_thr: float, y_thr: float) -> str:
 
 # —— 计算 LightGBM 贡献：使用 pipeline 的“前处理 + LGBMClassifier”——
 def compute_lgbm_contrib(pipe, x_df):
-    """返回 base(log-odds) 与逐特征贡献（list[dict]）"""
+    """
+    返回 base(log-odds) 与逐特征贡献（list[dict]）。
+    兼容末层为 CalibratedClassifierCV（从中取 base_estimator=LGBMClassifier）。
+    """
     try:
-        pre = pipe[:-1]
-        clf = pipe[-1]
-        Xp = pre.transform(x_df)
-        contrib = clf.predict(Xp, pred_contrib=True)  # shape=(1, n_features+1)
-        contrib = contrib[0]
-        base = float(contrib[-1])
+        # 拆 pipeline：preprocess（前 N-1 步） + last（最后一层）
+        if hasattr(pipe, "steps"):
+            pre = Pipeline(steps=pipe.steps[:-1]) if len(pipe.steps) > 1 else None
+            last = pipe.steps[-1][1]
+        else:
+            pre, last = None, pipe
+
+        # 前处理
+        Xp = pre.transform(x_df) if pre is not None else x_df
+
+        # 若是 CalibratedClassifierCV，则取其内部的 base_estimator
+        raw_est = last
+        if isinstance(last, CalibratedClassifierCV):
+            # 已拟合后应有 calibrated_classifiers_；cv='prefit' 时长度多为 1
+            if hasattr(last, "calibrated_classifiers_") and last.calibrated_classifiers_:
+                raw_est = last.calibrated_classifiers_[0].base_estimator
+            elif hasattr(last, "base_estimator") and last.base_estimator is not None:
+                raw_est = last.base_estimator
+            else:
+                raise RuntimeError("CalibratedClassifierCV 未找到 base_estimator。")
+
+        # 用 LightGBM 的 pred_contrib 取 TreeSHAP（最后一列是 bias）
+        if hasattr(raw_est, "predict"):
+            contrib = raw_est.predict(Xp, pred_contrib=True)
+        elif hasattr(raw_est, "booster_"):
+            contrib = raw_est.booster_.predict(Xp, pred_contrib=True)
+        else:
+            raise RuntimeError("底层估计器不支持 pred_contrib。")
+
+        contrib = np.asarray(contrib)[0]          # (n_features+1,)
+        base = float(contrib[-1])                 # bias / E[f(X)]
         vals = contrib[:-1]
+
         items = []
         for name, val in zip(x_df.columns.tolist(), vals):
             items.append({
@@ -121,8 +153,10 @@ def compute_lgbm_contrib(pipe, x_df):
                 "contribution": float(val)
             })
         return base, items
+
     except Exception as e:
         raise RuntimeError(f"无法计算特征贡献（pred_contrib）：{e}")
+
 
 # —— 绘图（不依赖 shap 包）：waterfall & force（保存为 TIFF）——
 import matplotlib.pyplot as plt
