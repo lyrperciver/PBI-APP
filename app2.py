@@ -618,7 +618,7 @@ if btn_predict:
 
         def _set_step5_style():
             try:
-                matplotlib.rcParams["font.family"] = "Times New Roman"  # step5 说明：Times New Roman + 高分辨率 TIFF
+                matplotlib.rcParams["font.family"] = "Times New Roman"
             except Exception:
                 pass
             matplotlib.rcParams["axes.unicode_minus"] = False
@@ -627,26 +627,17 @@ if btn_predict:
         def save_waterfall_tif(base, items, out_path: str, top_k: int = 14, lang="zh", dpi: int = 600):
             _set_step5_style()
             items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
-
             deltas = [it["contribution"] for it in items_sorted]
             labels = []
             for it in items_sorted:
                 v = it["value"]
-                # 数字显示更紧凑：整数不带小数，小数保留 2 位
-                if isinstance(v, (int, float)) and float(v).is_integer():
-                    v_txt = f"{int(v)}"
-                else:
-                    v_txt = f"{float(v):.2f}"
+                v_txt = f"{int(v)}" if isinstance(v, (int, float)) and float(v).is_integer() else f"{float(v):.2f}"
                 labels.append(f'{it["feature"]}={v_txt}')
-
-            # 逐步叠加构造 waterfall
             starts, cur = [], base
             for d in deltas:
                 starts.append(cur)
                 cur += d
-
-            colors = ["#d62728" if d >= 0 else "#1f77b4" for d in deltas]  # 红=升风险，蓝=降风险
-
+            colors = ["#d62728" if d >= 0 else "#1f77b4" for d in deltas]
             fig, ax = plt.subplots(figsize=(10, 5.2), dpi=dpi)
             ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6, edgecolor="none")
             ax.axhline(0, color="#333", lw=0.6)
@@ -655,7 +646,6 @@ if btn_predict:
             ax.set_ylabel("f(x) (log-odds)", fontsize=11)
             ax.set_title("Waterfall plot of this patient", fontsize=12)
             ax.text(-0.5, base, f"E[f(X)] = {base:.3f}", va="center", fontsize=9, color="#444")
-
             fig.tight_layout()
             fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
@@ -663,29 +653,20 @@ if btn_predict:
 
         def save_force_tif(base, items, out_path: str, top_k: int = 14, lang="zh", dpi: int = 600):
             _set_step5_style()
-
-            # 先按贡献值从小到大排序（左侧负、右侧正）
             items_sorted = sorted(items, key=lambda d: d["contribution"])
             if top_k and top_k < len(items_sorted):
                 neg = [it for it in items_sorted if it["contribution"] < 0]
                 pos = [it for it in items_sorted if it["contribution"] >= 0]
                 k2 = max(1, top_k // 2)
                 items_sorted = neg[:k2] + pos[-k2:]
-
             vals, labels = [], []
             for it in items_sorted:
                 vals.append(it["contribution"])
                 v = it["value"]
-                if isinstance(v, (int, float)) and float(v).is_integer():
-                    v_txt = f"{int(v)}"
-                else:
-                    v_txt = f"{float(v):.2f}"
+                v_txt = f"{int(v)}" if isinstance(v, (int, float)) and float(v).is_integer() else f"{float(v):.2f}"
                 labels.append(f'{it["feature"]}={v_txt}')
-
             colors = ["#1f77b4" if v < 0 else "#d62728" for v in vals]
-
-            # 根据条目数动态拉高画布，避免“挤在一起”
-            h = max(2.8, 0.55 * len(vals) + 1.8)  # 关键：拉高高度
+            h = max(2.8, 0.55 * len(vals) + 1.8)  # 动态高度，避免“都挤在一起”
             fig, ax = plt.subplots(figsize=(10, h), dpi=dpi)
             y = list(range(len(vals)))
             ax.barh(y, vals, color=colors, edgecolor="none")
@@ -694,10 +675,26 @@ if btn_predict:
             ax.set_yticklabels(labels, fontsize=9)
             ax.set_xlabel("contribution to f(x) (log-odds)", fontsize=11)
             ax.set_title("The force plot of this patient", fontsize=12)
-
             fig.tight_layout()
             fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
+
+
+        # === 实际调用：生成图片 + 页面展示 + 加入导出 ===
+        wf_path = "waterfall_patient.tif"
+        fc_path = "force_patient.tif"
+        save_waterfall_tif(base, items, wf_path, top_k=14, dpi=600)
+        save_force_tif(base, items, fc_path, top_k=14, dpi=600)
+
+        with st.expander("查看单独图片", expanded=True):
+            st.image(wf_path, caption="Waterfall（LightGBM 贡献）", use_column_width=True)
+            st.image(fc_path, caption="Force-like（LightGBM 贡献）", use_column_width=True)
+
+        from pathlib import Path
+
+        out_files["waterfall.tif"] = Path(wf_path).read_bytes()
+        out_files["force.tif"] = Path(fc_path).read_bytes()
+
 
 
     except Exception as e:
