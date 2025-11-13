@@ -611,40 +611,94 @@ if btn_predict:
         }])
         out_files["summary.csv"] = df_summary.to_csv(index=False).encode("utf-8")
 
-        # 绘图（升级：一页式报告 + 单图各自保存）
-        tmp_wf = "shap_waterfall_case.tif"
-        tmp_fc = "shap_force_case.tif"
-        tmp_report = "shap_report_case.tif"
+        # 仅生成与展示两张单图（不再生成“顶部结论”的整页报告）
+        import matplotlib
+        import matplotlib.pyplot as plt
 
-        # 当前页面语言与“哪种阈值口径”的分级文本
-        active_band = band_youden if mode == TEXT["youd"][LANG] else band_highs
 
-        save_waterfall_tif(base, items, tmp_wf, top_k=min(14, len(items)), lang=LANG)
-        save_force_tif(base, items, tmp_fc, top_k=min(14, len(items)), lang=LANG)
-        save_shap_report_tif(base, items, prob=p, band_text=active_band,
-                             out_path=tmp_report, lang=LANG, top_k=min(14, len(items)))
+        def _set_step5_style():
+            try:
+                matplotlib.rcParams["font.family"] = "Times New Roman"  # step5 说明：Times New Roman + 高分辨率 TIFF
+            except Exception:
+                pass
+            matplotlib.rcParams["axes.unicode_minus"] = False
 
-        # 放入导出包
-        with open(tmp_wf, "rb") as f:
-            out_files["shap_waterfall_case.tif"] = f.read()
-        with open(tmp_fc, "rb") as f:
-            out_files["shap_force_case.tif"] = f.read()
-        with open(tmp_report, "rb") as f:
-            out_files["shap_report_case.tif"] = f.read()
 
-        # 页面展示“报告式”与单图
-        st.image(tmp_report, caption="单例解释报告（顶部结论 + 瀑布图 + Force）", use_column_width=True)
-        with st.expander("查看单独图片", expanded=False):
-            st.image(tmp_wf, caption="Waterfall（LightGBM 贡献）", use_column_width=True)
-            st.image(tmp_fc, caption="Force-like（LightGBM 贡献）", use_column_width=True)
+        def save_waterfall_tif(base, items, out_path: str, top_k: int = 14, lang="zh", dpi: int = 600):
+            _set_step5_style()
+            items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
 
-        # 清理本地临时文件
-        try:
-            os.remove(tmp_wf);
-            os.remove(tmp_fc);
-            os.remove(tmp_report)
-        except Exception:
-            pass
+            deltas = [it["contribution"] for it in items_sorted]
+            labels = []
+            for it in items_sorted:
+                v = it["value"]
+                # 数字显示更紧凑：整数不带小数，小数保留 2 位
+                if isinstance(v, (int, float)) and float(v).is_integer():
+                    v_txt = f"{int(v)}"
+                else:
+                    v_txt = f"{float(v):.2f}"
+                labels.append(f'{it["feature"]}={v_txt}')
+
+            # 逐步叠加构造 waterfall
+            starts, cur = [], base
+            for d in deltas:
+                starts.append(cur)
+                cur += d
+
+            colors = ["#d62728" if d >= 0 else "#1f77b4" for d in deltas]  # 红=升风险，蓝=降风险
+
+            fig, ax = plt.subplots(figsize=(10, 5.2), dpi=dpi)
+            ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6, edgecolor="none")
+            ax.axhline(0, color="#333", lw=0.6)
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=9)
+            ax.set_ylabel("f(x) (log-odds)", fontsize=11)
+            ax.set_title("Waterfall plot of this patient", fontsize=12)
+            ax.text(-0.5, base, f"E[f(X)] = {base:.3f}", va="center", fontsize=9, color="#444")
+
+            fig.tight_layout()
+            fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+
+
+        def save_force_tif(base, items, out_path: str, top_k: int = 14, lang="zh", dpi: int = 600):
+            _set_step5_style()
+
+            # 先按贡献值从小到大排序（左侧负、右侧正）
+            items_sorted = sorted(items, key=lambda d: d["contribution"])
+            if top_k and top_k < len(items_sorted):
+                neg = [it for it in items_sorted if it["contribution"] < 0]
+                pos = [it for it in items_sorted if it["contribution"] >= 0]
+                k2 = max(1, top_k // 2)
+                items_sorted = neg[:k2] + pos[-k2:]
+
+            vals, labels = [], []
+            for it in items_sorted:
+                vals.append(it["contribution"])
+                v = it["value"]
+                if isinstance(v, (int, float)) and float(v).is_integer():
+                    v_txt = f"{int(v)}"
+                else:
+                    v_txt = f"{float(v):.2f}"
+                labels.append(f'{it["feature"]}={v_txt}')
+
+            colors = ["#1f77b4" if v < 0 else "#d62728" for v in vals]
+
+            # 根据条目数动态拉高画布，避免“挤在一起”
+            h = max(2.8, 0.55 * len(vals) + 1.8)  # 关键：拉高高度
+            fig, ax = plt.subplots(figsize=(10, h), dpi=dpi)
+            y = list(range(len(vals)))
+            ax.barh(y, vals, color=colors, edgecolor="none")
+            ax.axvline(0, color="#333", lw=0.6)
+            ax.set_yticks(y)
+            ax.set_yticklabels(labels, fontsize=9)
+            ax.set_xlabel("contribution to f(x) (log-odds)", fontsize=11)
+            ax.set_title("The force plot of this patient", fontsize=12)
+
+            fig.tight_layout()
+            fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+
 
     except Exception as e:
         st.warning(f"未能生成贡献图：{e}")
