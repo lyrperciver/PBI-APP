@@ -626,26 +626,52 @@ if btn_predict:
 
         def save_waterfall_tif(base, items, out_path: str, top_k: int = 14, lang="zh", dpi: int = 600):
             _set_step5_style()
+            # 取贡献绝对值最大的 top_k 个
             items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
-            deltas = [it["contribution"] for it in items_sorted]
-            labels = []
+
+            deltas, labels = [], []
             for it in items_sorted:
+                deltas.append(float(it["contribution"]))
                 v = it["value"]
                 v_txt = f"{int(v)}" if isinstance(v, (int, float)) and float(v).is_integer() else f"{float(v):.2f}"
                 labels.append(f'{it["feature"]}={v_txt}')
-            starts, cur = [], base
+
+            # 逐段累计（竖向 waterfall：每个柱子的 bottom=累计到上一段的值）
+            starts, cur = [], float(base)
             for d in deltas:
                 starts.append(cur)
                 cur += d
+
             colors = ["#d62728" if d >= 0 else "#1f77b4" for d in deltas]
             fig, ax = plt.subplots(figsize=(10, 5.2), dpi=dpi)
-            ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6, edgecolor="none")
+            bars = ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6, edgecolor="none")
             ax.axhline(0, color="#333", lw=0.6)
+
             ax.set_xticks(range(len(labels)))
             ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=9)
             ax.set_ylabel("f(x) (log-odds)", fontsize=11)
             ax.set_title("Waterfall plot of this patient", fontsize=12)
+
+            # —— 在每个条上标出具体的正负数值 —— #
+            # 计算 y 方向边距，用于文字轻微偏移，避免与柱边缘重合
+            tops = [s + d for s, d in zip(starts, deltas)]
+            ymin = min([base] + starts + tops)
+            ymax = max([base] + starts + tops)
+            yspan = max(1e-6, ymax - ymin)
+            pad = 0.015 * yspan
+
+            for i, (s, d) in enumerate(zip(starts, deltas)):
+                y_text = s + d + (pad if d >= 0 else -pad)
+                ax.text(i, y_text, f"{d:+.2f}", ha="center",
+                        va=("bottom" if d >= 0 else "top"),
+                        fontsize=9, color="black")
+
+            # 标注 E[f(X)]
             ax.text(-0.5, base, f"E[f(X)] = {base:.3f}", va="center", fontsize=9, color="#444")
+
+            # y 轴留一点空隙，避免最上/最下文字被裁切
+            ax.set_ylim(ymin - 0.05 * yspan, ymax + 0.08 * yspan)
+
             fig.tight_layout()
             fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
@@ -653,20 +679,24 @@ if btn_predict:
 
         def save_force_tif(base, items, out_path: str, top_k: int = 14, lang="zh", dpi: int = 600):
             _set_step5_style()
+            # 先按贡献从小到大排，随后做“负向前半 + 正向后半”的截取，保证两边信息对称
             items_sorted = sorted(items, key=lambda d: d["contribution"])
             if top_k and top_k < len(items_sorted):
                 neg = [it for it in items_sorted if it["contribution"] < 0]
                 pos = [it for it in items_sorted if it["contribution"] >= 0]
                 k2 = max(1, top_k // 2)
                 items_sorted = neg[:k2] + pos[-k2:]
+
             vals, labels = [], []
             for it in items_sorted:
-                vals.append(it["contribution"])
+                c = float(it["contribution"])
+                vals.append(c)
                 v = it["value"]
                 v_txt = f"{int(v)}" if isinstance(v, (int, float)) and float(v).is_integer() else f"{float(v):.2f}"
                 labels.append(f'{it["feature"]}={v_txt}')
+
             colors = ["#1f77b4" if v < 0 else "#d62728" for v in vals]
-            h = max(2.8, 0.55 * len(vals) + 1.8)  # 动态高度，避免“都挤在一起”
+            h = max(2.8, 0.55 * len(vals) + 1.8)  # 动态高度，避免“堆在一起”
             fig, ax = plt.subplots(figsize=(10, h), dpi=dpi)
             y = list(range(len(vals)))
             ax.barh(y, vals, color=colors, edgecolor="none")
@@ -675,6 +705,24 @@ if btn_predict:
             ax.set_yticklabels(labels, fontsize=9)
             ax.set_xlabel("contribution to f(x) (log-odds)", fontsize=11)
             ax.set_title("The force plot of this patient", fontsize=12)
+
+            # —— 为每个横条标出数值；并自动留左右边距 —— #
+            xmin = min(0.0, min(vals))  # 基于数据估一个范围
+            xmax = max(0.0, max(vals))
+            xspan = max(1e-6, xmax - xmin)
+            pad = 0.02 * xspan
+
+            for yi, v in enumerate(vals):
+                # 数值贴在条形末端外侧：正数靠右、负数靠左
+                x_text = v + (pad if v >= 0 else -pad)
+                ax.text(x_text, yi, f"{v:+.2f}",
+                        va="center",
+                        ha=("left" if v >= 0 else "right"),
+                        fontsize=9, color="black")
+
+            # 给坐标两端各加 8% 空间，确保文字不被裁切
+            ax.set_xlim(xmin - 0.08 * xspan, xmax + 0.08 * xspan)
+
             fig.tight_layout()
             fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
