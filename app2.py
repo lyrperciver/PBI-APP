@@ -735,8 +735,8 @@ if btn_predict:
         save_force_tif(base, items, fc_path, top_k=14, dpi=600)
 
         with st.expander("查看单独图片", expanded=True):
-            st.image(wf_path, caption="Waterfall（LightGBM 贡献）", use_column_width=True)
-            st.image(fc_path, caption="Force-like（LightGBM 贡献）", use_column_width=True)
+            st.image(wf_path, caption="Waterfall", use_column_width=True)
+            st.image(fc_path, caption="Force", use_column_width=True)
 
         from pathlib import Path
 
