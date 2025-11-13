@@ -207,76 +207,121 @@ def _format_risk_text(prob, band, lang="zh"):
         return f"该患儿脑损伤风险为「{band}」；预测概率 {prob:.4f}"
 
 def save_waterfall_tif(base, items, out_path: str, top_k: int = 14, lang="zh"):
+    """
+    论文风格：横向逐步累计 Waterfall
+    - y 轴是按 |贡献| 排序后的特征（从上到下）
+    - 每一行是一个“水平浮动条”，从累计起点 left 到 left+width
+    - 左侧标 E[f(X)]，右侧标 f(x)
+    """
+    # 1) 取前 top_k 项（按贡献绝对值大到小）
     items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
-    deltas = [it["contribution"] for it in items_sorted]
-    labels = [f'{it["feature"]}={it["value"]:.2f}' for it in items_sorted]
+    feats  = [f'{it["feature"]}={it["value"]:.2f}' for it in items_sorted]
+    deltas = [float(it["contribution"]) for it in items_sorted]
 
-    # 累积：从基线 E[f(X)] 逐步加到 f(x)
-    starts, cur = [], base
+    # 2) 逐步累计（横向）
+    starts = []
+    cur = float(base)
     for d in deltas:
-        starts.append(cur)
+        starts.append(cur if d >= 0 else cur + d)
         cur += d
-    fx = cur
+    fx = float(cur)
 
+    # 3) 画图
+    n = len(items_sorted)
+    y = np.arange(n)[::-1]  # 让“最大贡献”在最上
     colors = ["#d62728" if d >= 0 else "#1f77b4" for d in deltas]
-    fig, ax = plt.subplots(figsize=(10, 4.8), dpi=200)
-    bars = ax.bar(range(len(deltas)), deltas, bottom=starts, color=colors, width=0.6)
 
-    # 标注每个增量数值（+0.75 / -0.22）
-    for i, (b, d) in enumerate(zip(bars, deltas)):
-        ax.text(b.get_x()+b.get_width()/2, b.get_y()+b.get_height(),
-                f"{d:+.2f}", ha="center", va="bottom", fontsize=8)
+    fig, ax = plt.subplots(figsize=(10, 5.4), dpi=300)
+    ax.barh(y, width=[abs(d) for d in deltas], left=starts, height=0.62, color=colors, edgecolor="none")
 
-    # 基线与 f(x) 标注
-    ax.axhline(0, color="k", lw=0.5)
-    ax.text(-0.6, base, f"E[f(X)] = {base:.3f}", va="center", fontsize=9)
-    ax.text(len(deltas)-0.4, fx,  f"f(x) = {fx:.3f}", va="center", fontsize=9)
+    # 4) 每段标注 +0.75/-0.22
+    for yi, left, d in zip(y, starts, deltas):
+        x_pos = left + (abs(d) * (1 if d >= 0 else -1))  # 段末尾位置
+        ax.text(x_pos, yi, f"{d:+.2f}", va="center",
+                ha="left" if d >= 0 else "right", fontsize=8, color="black")
 
-    ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, rotation=55, ha="right", fontsize=8)
-    ax.set_ylabel("f(x) (log-odds)")
+    # 5) 坐标/标签/标题
+    ax.set_yticks(y)
+    ax.set_yticklabels([feats[i] for i in range(n)][::-1], fontsize=8)
+    ax.set_xlabel("f(x) (log-odds)")
     ax.set_title("Waterfall plot of this patient")
+
+    # 6) 范围与基线/终点标注
+    xmin = min(base, fx, *(s if d >= 0 else s for s, d in zip(starts, deltas))) - 0.5
+    xmax = max(base, fx, *(s + abs(d) for s, d in zip(starts, deltas))) + 0.5
+    ax.set_xlim(xmin, xmax)
+
+    ax.axvline(0, color="k", lw=0.6)
+    ax.text(base,  n + 0.2, f"E[f(X)] = {base:.3f}", ha="center", va="bottom", fontsize=9)
+    ax.text(fx,    n + 0.2, f"f(x) = {fx:.3f}",   ha="center", va="bottom", fontsize=9)
+
     fig.tight_layout()
-    fig.savefig(out_path, dpi=300)
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
+
 
 def save_force_tif(base, items, out_path: str, top_k: int = 14, lang="zh"):
-    # 取绝对值最大的若干个，做“累计段状”力图
+    """
+    论文风格：单轴 Force-like 图
+    - 在一条水平轴上，从 base 向右(红)/向左(蓝)逐段累计到 f(x)
+    - 顶部显示 higher / lower 标签；底部显示 base value 与 f(x)
+    """
     items_sorted = sorted(items, key=lambda d: abs(d["contribution"]), reverse=True)[:top_k]
-    fig_h = 2.6 + 0.28 * len(items_sorted)
-    fig, ax = plt.subplots(figsize=(10, fig_h), dpi=200)
 
-    # 从 base 开始，按贡献顺序“堆”出红蓝段
-    cursor = base
+    # 累计区段
+    segs = []
+    cur = float(base)
     for it in items_sorted:
-        c = it["contribution"]
-        left = cursor if c >= 0 else cursor + c
-        width = abs(c)
-        color = "#d62728" if c >= 0 else "#1f77b4"
-        ax.add_patch(Rectangle((left, 0.2), width, 0.6, color=color))
-        ax.text(left + (width/2), 0.5, f'{it["feature"]}={it["value"]:.2f}',
-                ha="center", va="center", fontsize=8, color="white",
-                bbox=dict(boxstyle="round,pad=0.15", facecolor=color, edgecolor="none", alpha=0.8))
-        cursor += c
+        c = float(it["contribution"])
+        left = cur if c >= 0 else cur + c
+        right = cur + c if c >= 0 else cur
+        segs.append((left, right, it))
+        cur += c
+    fx = float(cur)
 
-    fx = cursor
-    # 中轴、基线与终点
-    ax.axvline(0, color="k", lw=0.5)
-    ax.text(base, 0.95, f"base value = {base:.3f}", ha="center", va="bottom", fontsize=9)
-    ax.text(fx,   0.95, f"f(x) = {fx:.3f}", ha="center", va="bottom", fontsize=9)
+    # 计算显示范围
+    xs = [base, fx] + [p for lr in segs for p in lr[:2]]
+    xmin, xmax = min(xs) - 0.5, max(xs) + 0.5
 
-    # 只显示 x 轴刻度；隐藏 y 轴修饰
+    # 作图
+    fig, ax = plt.subplots(figsize=(10, 3.6), dpi=300)
+    ax.set_ylim(0, 1)
     ax.set_yticks([])
+
+    # 主轴
+    ax.hlines(0.5, xmin, xmax, colors="#888", lw=1)
+    ax.axvline(0, color="k", lw=0.6)
+
+    # 区段 + 标签
+    for left, right, it in segs:
+        color = "#d62728" if right >= left else "#1f77b4"
+        ax.add_patch(Rectangle((min(left, right), 0.36), abs(right-left), 0.28,
+                               facecolor=color, edgecolor="none", alpha=0.95))
+        ax.text((left+right)/2, 0.50,
+                f'{it["feature"]}={it["value"]:.2f}',
+                ha="center", va="center", fontsize=8, color="white")
+
+    # 标注 base 与 f(x)
+    ax.text(base, 0.86, f"base value = {base:.3f}", ha="center", va="bottom", fontsize=9)
+    ax.text(fx,   0.86, f"f(x) = {fx:.3f}",       ha="center", va="bottom", fontsize=9)
+
+    # higher / lower
+    ax.text(xmax, 0.95, "higher", color="#d62728", ha="right", va="top", fontsize=9)
+    ax.text(xmin, 0.95, "lower",  color="#1f77b4", ha="left",  va="top", fontsize=9)
+
+    ax.set_xlim(xmin, xmax)
     ax.set_xlabel("contribution to f(x) (log-odds)")
     ax.set_title("The force plot of this patient")
-    ax.set_ylim(0, 1.2)
     fig.tight_layout()
-    fig.savefig(out_path, dpi=300)
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
+
 def save_shap_report_tif(base, items, prob, band_text, out_path: str, lang="zh", top_k: int = 14):
-    """一页式报告：上方一句话风险总结 + Waterfall + Force"""
-    # 先生成两张子图，再拼在一张画布上
+    """
+    一页式报告：顶部“这名患儿…概率 0.xxxx”，下方 Waterfall + Force
+    - 将“高/中/低/极低”与概率高亮红色，模仿论文排版
+    """
     tmp_wf = "_tmp_wf.tif"
     tmp_fc = "_tmp_fc.tif"
     save_waterfall_tif(base, items, tmp_wf, top_k=top_k, lang=lang)
@@ -284,28 +329,37 @@ def save_shap_report_tif(base, items, prob, band_text, out_path: str, lang="zh",
 
     wf = plt.imread(tmp_wf)
     fc = plt.imread(tmp_fc)
-    fig, ax = plt.subplots(figsize=(10, 11), dpi=200)
+
+    fig, ax = plt.subplots(figsize=(10, 11.2), dpi=300)
     ax.axis("off")
 
-    # 顶部一句话
-    ax.text(0.02, 0.97, _format_risk_text(prob, band_text, lang),
-            ha="left", va="top", fontsize=14, color="crimson", transform=ax.transAxes)
+    # —— 顶部大标题（分两次写字以高亮“风险等级”和“概率”）——
+    if lang == "en":
+        ax.text(0.02, 0.975, "This patient has ", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.31, 0.975, f"{band_text} risk", color="crimson", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.47, 0.975, " of PBI with the probability of ", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.86, 0.975, f"{prob:.4f}", color="crimson", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.02, 0.94,
+                "Waterfall plots show how each feature moves the model output from the expected value (E[f(X)]) "
+                "to the prediction f(x). Red increases risk; blue decreases risk.", fontsize=10, color="#444",
+                ha="left", va="top", transform=ax.transAxes)
+    else:
+        ax.text(0.02, 0.975, "该患儿脑损伤风险为 ", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.30, 0.975, f"「{band_text}」", color="crimson", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.40, 0.975, "；预测概率 ", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.52, 0.975, f"{prob:.4f}", color="crimson", ha="left", va="top", fontsize=18, transform=ax.transAxes)
+        ax.text(0.02, 0.94,
+                "瀑布图展示从期望输出 E[f(X)] 到个体输出 f(x) 的逐步贡献；红色↑风险，蓝色↓风险。",
+                fontsize=10, color="#444", ha="left", va="top", transform=ax.transAxes)
 
-    # 简短说明文字（与示例类似）
-    desc_en = ("Waterfall plots are designed to display explanations for individual predictions. "
-               "Each row shows how the positive (red) or negative (blue) contribution of each feature "
-               "moves the value from the expected model output to the model output for this prediction.")
-    desc_zh = "瀑布图用于解释个体预测：红色表示提高风险的贡献，蓝色表示降低风险的贡献；从基线 E[f(X)] 逐步累加到 f(x)。"
-    ax.text(0.02, 0.935, desc_en if lang=="en" else desc_zh,
-            ha="left", va="top", fontsize=10, color="#444", transform=ax.transAxes)
-
-    # 把两张子图贴到画布
-    ax.imshow(wf, extent=[0, 1, 0.43, 0.92])
-    ax.imshow(fc, extent=[0, 1, 0.02, 0.40])
+    # —— 拼图：上半瀑布、下半 force ——
+    ax.imshow(wf, extent=[0, 1, 0.44, 0.92])
+    ax.imshow(fc, extent=[0, 1, 0.03, 0.41])
 
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
-    # 清理临时文件
+
+    # 清理临时图
     try:
         import os
         os.remove(tmp_wf); os.remove(tmp_fc)
