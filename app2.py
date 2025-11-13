@@ -34,6 +34,12 @@ TEXT = {
         "zh": "说明：本工具仅用于科研/质控，不构成临床诊断依据。",
         "en": "Note: Research/QC only. Not for clinical diagnosis.",
     },
+    "band_title": {"zh": "阈值与分级（四档）", "en": "Thresholds & four-level risk bands"},
+    "view_imgs": {"zh": "查看单独图片", "en": "View individual images"},
+    "download_zip_all": {
+    "zh": "下载导出（包含分级、waterfall/force、贡献CSV）",
+    "en": "Download (bands + waterfall/force + contributions CSV)"
+    },
     "meta": {"zh": "版本/来源信息", "en": "Release / Meta"},
     "input_section": {"zh": "输入特征", "en": "Input features"},
     "thresh_mode": {"zh": "阈值策略", "en": "Threshold mode"},
@@ -76,7 +82,8 @@ TEXT = {
 }
 
 # =============== 2) 语言选择 ===============
-st.set_page_config(page_title=TEXT["title"]["zh"], layout="centered")
+st.set_page_config(page_title="PBI Risk Prediction · Prototype", layout="centered")
+
 lang_choice = st.sidebar.radio(
     f'{TEXT["lang_label"]["zh"]} / {TEXT["lang_label"]["en"]}',
     ["中文", "English"],
@@ -575,21 +582,48 @@ if btn_predict:
     youden_thr = float(thrs["youden"])
     hs_thr = float(thrs["highs"])
 
-    st.subheader(TEXT.get("pred_prob", {}).get(LANG, "预测概率 / Predicted probability"))
-    st.metric("Predicted probability", f"{p:.4f}")
+    st.subheader(TEXT["probability"][LANG])
+    st.metric(TEXT["probability"][LANG], f"{p:.4f}")
 
     # —— 两种策略下的四档风险分级 ——
     band_youden = risk_band_from_prob(p, hs_thr, youden_thr)
     band_highs = risk_band_from_prob(p, hs_thr, youden_thr)  # 分级规则一致，只是口径不同时你也可单独给阈值
 
-    st.write("**阈值与分级（四档）**")
+    st.write(f"**{TEXT['band_title'][LANG]}**")
+
     c1, c2 = st.columns(2)
+
+
+    # 小工具：把“极低/低/中/高”翻成英文
+    def _band_disp(b):
+        return {"极低": "very low", "低": "low", "中": "medium", "高": "high"}.get(b, b)
+
+
     with c1:
-        dec_y = "阳性" if p >= youden_thr else "阴性"
-        st.info(f"**Youden**：阈值={youden_thr:.6f} → 判定：**{dec_y}**；风险分级：**{band_youden}**")
+        if LANG == "en":
+            dec_y = "Positive" if p >= youden_thr else "Negative"
+            st.info(
+                f"**Youden**: threshold={youden_thr:.6f} → decision: **{dec_y}**; "
+                f"risk band: **{_band_disp(band_youden)}**"
+            )
+        else:
+            dec_y = "阳性" if p >= youden_thr else "阴性"
+            st.info(
+                f"**Youden**：阈值={youden_thr:.6f} → 判定：**{dec_y}**；风险分级：**{band_youden}**"
+            )
+
     with c2:
-        dec_h = "阳性" if p >= hs_thr else "阴性"
-        st.info(f"**高敏**：阈值={hs_thr:.6f} → 判定：**{dec_h}**；风险分级：**{band_highs}**")
+        if LANG == "en":
+            dec_h = "Positive" if p >= hs_thr else "Negative"
+            st.info(
+                f"**{TEXT['hsens'][LANG]}**: threshold={hs_thr:.6f} → decision: **{dec_h}**; "
+                f"risk band: **{_band_disp(band_highs)}**"
+            )
+        else:
+            dec_h = "阳性" if p >= hs_thr else "阴性"
+            st.info(
+                f"**高敏**：阈值={hs_thr:.6f} → 判定：**{dec_h}**；风险分级：**{band_highs}**"
+            )
 
     # —— 计算 LightGBM 贡献并绘图/导出 ——
     import pandas as pd, numpy as np, io, zipfile, os
@@ -734,7 +768,7 @@ if btn_predict:
         save_waterfall_tif(base, items, wf_path, top_k=14, dpi=600)
         save_force_tif(base, items, fc_path, top_k=14, dpi=600)
 
-        with st.expander("查看单独图片", expanded=True):
+        with st.expander(TEXT["view_imgs"][LANG], expanded=True):
             st.image(wf_path, caption="Waterfall", use_column_width=True)
             st.image(fc_path, caption="Force", use_column_width=True)
 
@@ -754,7 +788,7 @@ if btn_predict:
         with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for nm, data in out_files.items():
                 zf.writestr(nm, data)
-        st.download_button("下载导出（包含分级、waterfall/force、贡献CSV）",
+        st.download_button(TEXT["download_zip_all"][LANG],
                            data=zip_buf.getvalue(),
                            file_name="pbi_single_prediction_exports.zip",
                            mime="application/zip")
