@@ -393,7 +393,7 @@ DISPLAY = {
     "WBC": {"zh": "白细胞计数 (WBC, 10^9/L)", "en": "WBC (10^9/L)"},
     "Hb": {"zh": "血红蛋白 (Hb, g/L)", "en": "Hemoglobin (g/L)"},
     "BE": {"zh": "碱剩余 (BE, mmol/L)", "en": "Base excess (mmol/L)"},
-    "antenatal_mgso4": {"zh": "产前促肺/硫酸镁治疗 (0/1)", "en": "Antenatal MgSO4 / steroids (0/1)"},
+    "antenatal_mgso4": {"zh": "产前硫酸镁治疗 (0/1)", "en": "Antenatal MgSO4 (0/1)"},
     "surgery": {"zh": "手术 (0/1)", "en": "Surgery (0/1)"},
     "NRDS": {"zh": "新生儿呼吸窘迫综合征 (0/1)", "en": "NRDS (0/1)"},
     "AOP": {"zh": "早产儿贫血 (0/1)", "en": "AOP (0/1)"},
